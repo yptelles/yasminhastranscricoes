@@ -6,199 +6,118 @@ from datetime import datetime
 st.set_page_config(page_title="🎙️ Transcritor", page_icon="🎙️", layout="wide")
 
 st.title("🎙️ Transcritor de Áudio com IA")
-st.markdown("**Transcrição automática + Identificação de quem fala**")
 
-# Sidebar - API Key
+# Sidebar
 with st.sidebar:
-    st.header("⚙️ Configurações")
-    api_key = st.text_input(
-        "Cole sua API Key (AssemblyAI):",
-        type="password",
-        help="Crie conta grátis em: https://www.assemblyai.com"
-    )
-    
+    st.header("⚙️ Config")
+    api_key = st.text_input("API Key:", type="password")
     if api_key:
-        st.success("✅ API Key configurada!")
-    else:
-        st.warning("⚠️ Insira sua API Key para começar")
-    
-    st.markdown("---")
-    st.info("""
-    **Como obter API Key (Grátis):**
-    1. Vá para assemblyai.com
-    2. Clique "Sign Up" (grátis)
-    3. Copie seu API Token
-    4. Cole acima
-    """)
+        st.success("✅ OK")
 
-# Inicializar session state
-if 'transcriptions' not in st.session_state:
-    st.session_state.transcriptions = []
+if 'trans' not in st.session_state:
+    st.session_state.trans = []
 
-# Função para transcrever
-def transcrever_audio(file_bytes, api_key):
-    """Envia áudio para AssemblyAI e retorna transcrição com speakers"""
-    
-    headers = {
-        "Authorization": api_key,
-        "Content-Type": "application/octet-stream"
-    }
-    
-    try:
-        # Upload do arquivo
-        st.info("📤 Enviando arquivo...")
-        upload_response = requests.post(
-            "https://api.assemblyai.com/v1/upload",
-            headers=headers,
-            data=file_bytes,
-            timeout=60
-        )
-        
-        if upload_response.status_code != 200:
-            st.error("❌ Erro ao fazer upload")
-            return None
-        
-        audio_url = upload_response.json()['upload_url']
-        st.success("✅ Arquivo enviado!")
-        
-        # Solicitar transcrição com speaker detection
-        st.info("🎙️ Processando transcrição...")
-        
-        transcript_request = {
-            "audio_url": audio_url,
-            "speaker_labels": True,
-            "speakers_expected": 2
-        }
-        
-        transcript_response = requests.post(
-            "https://api.assemblyai.com/v1/transcript",
-            headers=headers,
-            json=transcript_request,
-            timeout=60
-        )
-        
-        if transcript_response.status_code != 200:
-            st.error("❌ Erro na solicitação")
-            return None
-        
-        transcript_id = transcript_response.json()['id']
-        
-        # Verificar status
-        st.info("⏳ Aguardando transcrição... (alguns minutos)")
-        
-        while True:
-            status_response = requests.get(
-                f"https://api.assemblyai.com/v1/transcript/{transcript_id}",
-                headers=headers,
-                timeout=60
-            )
-            
-            result = status_response.json()
-            status = result.get('status')
-            
-            if status == 'completed':
-                st.success("✅ Transcrição concluída!")
-                return result
-            elif status == 'error':
-                st.error(f"❌ Erro: {result.get('error')}")
-                return None
-            
-            time.sleep(3)
-    
-    except Exception as e:
-        st.error(f"❌ Erro: {str(e)}")
-        return None
-
-# Tabs
-tab1, tab2 = st.tabs(["📤 Upload e Transcrição", "📋 Histórico"])
+tab1, tab2 = st.tabs(["📤 Upload", "📋 Histórico"])
 
 with tab1:
-    st.header("📤 Fazer Upload de Áudio")
-    
     if not api_key:
-        st.warning("⚠️ Configure sua API Key na barra lateral!")
+        st.warning("Insira API Key!")
     else:
-        file = st.file_uploader(
-            "Escolha um arquivo:",
-            type=['mp3', 'wav', 'mp4', 'm4a', 'ogg', 'flac', 'webm', 'aac', 'mov']
-        )
+        st.header("Upload de Áudio")
+        file = st.file_uploader("Arquivo:", type=['mp3','wav','mp4','m4a','ogg','flac'])
         
         if file:
-            st.success(f"✅ {file.name} ({file.size / 1024 / 1024:.1f} MB)")
+            st.info(f"✅ {file.name} ({file.size/1024/1024:.1f}MB)")
             
             if st.button("🚀 Transcrever"):
-                result = transcrever_audio(file.getbuffer().read(), api_key)
+                try:
+                    bar = st.progress(0)
+                    txt = st.empty()
+                    
+                    # Upload
+                    txt.text("Enviando...")
+                    bar.progress(20)
+                    
+                    resp = requests.post(
+                        "https://api.assemblyai.com/v1/upload",
+                        headers={"Authorization": api_key},
+                        data=file.getbuffer()
+                    )
+                    
+                    url = resp.json()['upload_url']
+                    
+                    # Transcrever
+                    txt.text("Iniciando transcrição...")
+                    bar.progress(40)
+                    
+                    resp2 = requests.post(
+                        "https://api.assemblyai.com/v1/transcript",
+                        headers={"Authorization": api_key},
+                        json={
+                            "audio_url": url,
+                            "speaker_labels": True
+                        }
+                    )
+                    
+                    tid = resp2.json()['id']
+                    
+                    # Aguardar
+                    txt.text("Processando...")
+                    bar.progress(50)
+                    
+                    for i in range(1440):
+                        r = requests.get(
+                            f"https://api.assemblyai.com/v1/transcript/{tid}",
+                            headers={"Authorization": api_key}
+                        )
+                        
+                        res = r.json()
+                        
+                        bar.progress(min(50 + i//20, 95))
+                        
+                        if res['status'] == 'completed':
+                            bar.progress(100)
+                            st.session_state.resultado = res
+                            st.session_state.arquivo = file.name
+                            st.success("✅ Pronto!")
+                            break
+                        elif res['status'] == 'error':
+                            st.error("❌ Erro")
+                            break
+                        
+                        time.sleep(5)
                 
-                if result and result.get('status') == 'completed':
-                    st.session_state.current_transcript = result
-                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro: {e}")
 
-# Mostrar transcrição
-if 'current_transcript' in st.session_state:
+# Resultado
+if 'resultado' in st.session_state:
     st.markdown("---")
-    st.header("📝 Transcrição")
+    st.header("📝 Resultado")
     
-    result = st.session_state.current_transcript
+    res = st.session_state.resultado
     
     col1, col2 = st.columns(2)
     with col1:
-        speaker_1_name = st.text_input("Renomear Pessoa 1:", "Pessoa 1", key="s1")
+        p1 = st.text_input("Pessoa 1:", "Pessoa 1")
     with col2:
-        speaker_2_name = st.text_input("Renomear Pessoa 2:", "Pessoa 2", key="s2")
+        p2 = st.text_input("Pessoa 2:", "Pessoa 2")
     
-    if result.get('utterances'):
-        st.subheader("Transcrição:")
+    if res.get('utterances'):
+        txt = ""
+        for u in res['utterances']:
+            s = u['speaker']
+            t = u['text']
+            name = p1 if s == 'A' else p2
+            st.write(f"**{name}:** {t}")
+            txt += f"{name}: {t}\n"
         
-        full_text = ""
-        for utterance in result['utterances']:
-            speaker = utterance.get('speaker', 'Desconhecido')
-            
-            if speaker == 'A':
-                name = speaker_1_name
-            elif speaker == 'B':
-                name = speaker_2_name
-            else:
-                name = f"Falante {speaker}"
-            
-            text = utterance.get('text', '')
-            st.write(f"**{name}:** {text}")
-            full_text += f"{name}: {text}\n\n"
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.download_button(
-                "📥 Baixar TXT",
-                full_text,
-                file_name=f"transcricao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            )
-        with col2:
-            if st.button("💾 Salvar"):
-                st.session_state.transcriptions.insert(0, {
-                    'nome': file.name,
-                    'data': datetime.now().strftime("%d/%m/%Y %H:%M"),
-                    'texto': full_text
-                })
-                st.success("✅ Salvo!")
-    else:
-        st.info("Nenhuma fala detectada")
+        st.download_button("📥 Baixar TXT", txt, file_name=f"trans_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
 
 with tab2:
     st.header("📋 Histórico")
-    
-    if st.session_state.transcriptions:
-        for idx, trans in enumerate(st.session_state.transcriptions):
-            with st.expander(f"📄 {trans['nome']} - {trans['data']}"):
-                st.write(trans['texto'])
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.download_button("📥 Baixar", trans['texto'], file_name=f"trans_{idx}.txt", key=f"dl_{idx}")
-                with col2:
-                    if st.button("❌ Deletar", key=f"del_{idx}"):
-                        st.session_state.transcriptions.pop(idx)
-                        st.rerun()
+    if st.session_state.trans:
+        for t in st.session_state.trans:
+            st.write(t)
     else:
-        st.info("Nenhuma transcrição")
-
-st.markdown("---")
-st.markdown("**✅ Gratuito:** 600 min/mês | **🎯 Automático:** Identifica quem fala | **📥 Baixável:** Em TXT")
+        st.info("Vazio")
