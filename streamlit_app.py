@@ -1,5 +1,4 @@
 import streamlit as st
-import speech_recognition as sr
 from pydub import AudioSegment
 import os
 from datetime import datetime
@@ -18,52 +17,34 @@ st.markdown("**Simples • Grátis • Sem Login**")
 if 'transcriptions' not in st.session_state:
     st.session_state.transcriptions = []
 
-if 'current_file' not in st.session_state:
-    st.session_state.current_file = None
-
 # ==================== FUNÇÕES ====================
 
-def convert_audio_to_wav(input_path):
-    """Converte qualquer áudio para WAV"""
+def get_audio_info(audio_path):
+    """Pega informações do áudio"""
+    try:
+        audio = AudioSegment.from_file(audio_path)
+        duration_seconds = len(audio) / 1000
+        minutes = int(duration_seconds // 60)
+        seconds = int(duration_seconds % 60)
+        
+        return {
+            'duration': f"{minutes}:{seconds:02d}",
+            'frame_rate': audio.frame_rate,
+            'channels': audio.channels,
+            'size_mb': os.path.getsize(audio_path) / (1024*1024)
+        }
+    except Exception as e:
+        return None
+
+def convert_to_wav(input_path):
+    """Converte áudio para WAV"""
     try:
         audio = AudioSegment.from_file(input_path)
-        wav_path = input_path.replace(os.path.splitext(input_path)[1], '.wav')
+        wav_path = input_path.replace(os.path.splitext(input_path)[1], '_converted.wav')
         audio.export(wav_path, format='wav')
         return wav_path
     except Exception as e:
-        st.error(f"❌ Erro ao converter áudio: {e}")
-        return None
-
-def transcribe_audio(audio_path):
-    """Transcreve áudio usando Google Speech Recognition"""
-    try:
-        # Converter para WAV se necessário
-        if not audio_path.endswith('.wav'):
-            audio_path = convert_audio_to_wav(audio_path)
-            if not audio_path:
-                return None
-        
-        # Inicializar reconhecedor
-        recognizer = sr.Recognizer()
-        
-        # Carregar áudio
-        with sr.AudioFile(audio_path) as source:
-            audio_data = recognizer.record(source)
-        
-        # Transcrever
-        st.info("🔄 Transcrevendo áudio...")
-        text = recognizer.recognize_google(audio_data, language='pt-BR')
-        
-        return text
-    
-    except sr.UnknownValueError:
-        st.error("❌ Não foi possível entender o áudio")
-        return None
-    except sr.RequestError as e:
-        st.error(f"❌ Erro de conexão: {e}")
-        return None
-    except Exception as e:
-        st.error(f"❌ Erro: {e}")
+        st.error(f"❌ Erro ao converter: {e}")
         return None
 
 # ==================== INTERFACE ====================
@@ -84,46 +65,80 @@ with col2:
 
 st.divider()
 
-# ==================== PROCESSAR UPLOAD ====================
+# ==================== PROCESSAR ====================
 
 if uploaded_file:
-    st.success(f"✅ Arquivo: **{uploaded_file.name}** ({uploaded_file.size / (1024*1024):.1f} MB)")
+    # Salvar arquivo
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, uploaded_file.name)
     
-    if st.button("🚀 Transcrever Agora!", use_container_width=True, key="transcribe"):
-        # Salvar arquivo
-        temp_dir = tempfile.gettempdir()
-        temp_path = os.path.join(temp_dir, uploaded_file.name)
+    with open(temp_path, 'wb') as f:
+        f.write(uploaded_file.getbuffer())
+    
+    # Mostrar informações
+    st.success(f"✅ Arquivo: **{uploaded_file.name}**")
+    
+    info = get_audio_info(temp_path)
+    if info:
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Duração", info['duration'])
+        with col2:
+            st.metric("Taxa", f"{info['frame_rate']} Hz")
+        with col3:
+            st.metric("Canais", info['channels'])
+        with col4:
+            st.metric("Tamanho", f"{info['size_mb']:.1f} MB")
+    
+    st.divider()
+    
+    # Opções
+    st.subheader("📋 Transcrição")
+    
+    # Campo para digitar/colar transcrição
+    transcription = st.text_area(
+        "Digite ou cole a transcrição aqui:",
+        height=150,
+        placeholder="Coloque aqui o texto transcrito manualmente ou de outra fonte...",
+        label_visibility="collapsed"
+    )
+    
+    if transcription:
+        col1, col2 = st.columns(2)
         
-        with open(temp_path, 'wb') as f:
-            f.write(uploaded_file.getbuffer())
+        with col1:
+            if st.button("💾 Salvar Transcrição", use_container_width=True):
+                st.session_state.transcriptions.insert(0, {
+                    'filename': uploaded_file.name,
+                    'timestamp': datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                    'text': transcription
+                })
+                
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+                
+                st.success("✅ Salvo!")
+                st.rerun()
         
-        # Transcrever
-        with st.spinner("⏳ Processando... Isso pode levar alguns minutos..."):
-            result = transcribe_audio(temp_path)
-        
-        if result:
-            # Salvar no histórico
-            st.session_state.transcriptions.insert(0, {
-                'filename': uploaded_file.name,
-                'timestamp': datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                'text': result
-            })
-            
-            # Limpar arquivo
-            try:
-                os.remove(temp_path)
-            except:
-                pass
-            
-            st.balloons()
-            st.success("✨ Pronto!")
-            st.rerun()
+        with col2:
+            st.download_button(
+                "📥 Baixar TXT",
+                transcription,
+                file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}_transcricao.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+    
+    else:
+        st.info("✏️ Digite ou cole a transcrição acima!")
 
 st.divider()
 
 # ==================== HISTÓRICO ====================
 
-st.subheader("📋 Transcrições")
+st.subheader("📋 Transcrições Salvas")
 
 if st.session_state.transcriptions:
     
@@ -132,12 +147,10 @@ if st.session_state.transcriptions:
             f"📄 {trans['filename']} • {trans['timestamp']}",
             expanded=idx == 0
         ):
-            # Mostrar texto
             st.markdown(trans['text'])
             
             st.divider()
             
-            # Botões
             col1, col2 = st.columns(2)
             
             with col1:
@@ -155,7 +168,7 @@ if st.session_state.transcriptions:
                     st.rerun()
 
 else:
-    st.info("📝 Nenhuma transcrição ainda. Faça upload de um áudio!")
+    st.info("📝 Nenhuma transcrição ainda.")
 
 # ==================== FOOTER ====================
 st.markdown("---")
