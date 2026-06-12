@@ -20,33 +20,21 @@ with st.sidebar:
     api_key = st.text_input(
         "Cole sua API Key (AssemblyAI):",
         type="password",
+        placeholder="a30efb4d919db009e232d32c5...",
         help="Crie conta grátis em: https://www.assemblyai.com"
     )
     
     if api_key:
-        # Validar API Key
-        try:
-            test_response = requests.get(
-                'https://api.assemblyai.com/v1/account',
-                headers={"Authorization": api_key},
-                timeout=5
-            )
-            if test_response.status_code == 200:
-                st.success("✅ API Key válida!")
-            else:
-                st.error(f"❌ API Key inválida (Status: {test_response.status_code})")
-                api_key = None
-        except Exception as e:
-            st.error(f"❌ Erro ao validar API Key: {str(e)}")
-            api_key = None
+        st.info(f"✏️ API Key: {api_key[:10]}...{api_key[-5:]}")
     else:
         st.warning("⚠️ Insira sua API Key para começar")
         st.markdown("""
         **Como obter grátis:**
         1. Vá para [assemblyai.com](https://www.assemblyai.com)
         2. Clique "Sign Up" 
-        3. Copie seu **API Token**
-        4. Cole aqui ☝️
+        3. **Confirme seu email!**
+        4. Copie seu **API Token**
+        5. Cole aqui ☝️
         """)
     
     st.markdown("---")
@@ -63,31 +51,14 @@ with st.sidebar:
     }
     lang_code = lang_map[language]
 
-# ==================== VERIFICAÇÃO ====================
-if not api_key:
-    st.error("❌ Configure sua API Key no sidebar para começar!")
-    st.stop()
-
 # ==================== INICIALIZAR STATE ====================
 if 'transcriptions' not in st.session_state:
     st.session_state.transcriptions = []
 
 # ==================== FUNÇÕES ====================
 
-def test_api_connection(api_key):
-    """Testa conexão com AssemblyAI"""
-    try:
-        response = requests.get(
-            'https://api.assemblyai.com/v1/account',
-            headers={"Authorization": api_key},
-            timeout=5
-        )
-        return response.status_code == 200
-    except:
-        return False
-
 def upload_and_transcribe(file_path, api_key, language):
-    """Upload e inicia transcrição"""
+    """Upload e inicia transcrição - COM LOGS DETALHADOS"""
     
     try:
         # PASSO 1: Upload do arquivo
@@ -96,6 +67,8 @@ def upload_and_transcribe(file_path, api_key, language):
         with open(file_path, 'rb') as f:
             headers = {"Authorization": api_key}
             
+            st.write("Enviando para: `https://api.assemblyai.com/v1/upload`")
+            
             upload_response = requests.post(
                 'https://api.assemblyai.com/v1/upload',
                 headers=headers,
@@ -103,14 +76,34 @@ def upload_and_transcribe(file_path, api_key, language):
                 timeout=60
             )
         
+        st.write(f"Status do upload: `{upload_response.status_code}`")
+        
         if upload_response.status_code != 200:
+            error_msg = f"""
+            ❌ **Erro no upload!**
+            
+            **Status:** {upload_response.status_code}
+            
+            **Resposta:**
+            ```
+            {upload_response.text}
+            ```
+            
+            **Possíveis causas:**
+            - API Key inválida
+            - Conta não está ativa
+            - Email não foi confirmado
+            - Plano expirou
+            """
+            st.error(error_msg)
             return {
                 'success': False,
-                'error': f"Erro no upload (Status: {upload_response.status_code})\n{upload_response.text}"
+                'error': f"Upload falhou - Status {upload_response.status_code}"
             }
         
         audio_url = upload_response.json()['upload_url']
         st.success("✅ Upload concluído!")
+        st.write(f"Audio URL: `{audio_url[:50]}...`")
         
         # PASSO 2: Iniciar transcrição
         st.info("🔄 Iniciando transcrição...")
@@ -127,6 +120,9 @@ def upload_and_transcribe(file_path, api_key, language):
             "speakers_expected": 2
         }
         
+        st.write("Enviando para: `https://api.assemblyai.com/v1/transcript`")
+        st.write(f"Dados: `{data}`")
+        
         transcript_response = requests.post(
             'https://api.assemblyai.com/v1/transcript',
             headers=headers,
@@ -134,14 +130,28 @@ def upload_and_transcribe(file_path, api_key, language):
             timeout=30
         )
         
+        st.write(f"Status da transcrição: `{transcript_response.status_code}`")
+        
         if transcript_response.status_code != 200:
+            error_msg = f"""
+            ❌ **Erro na transcrição!**
+            
+            **Status:** {transcript_response.status_code}
+            
+            **Resposta:**
+            ```
+            {transcript_response.text}
+            ```
+            """
+            st.error(error_msg)
             return {
                 'success': False,
-                'error': f"Erro na transcrição (Status: {transcript_response.status_code})\n{transcript_response.text}"
+                'error': f"Transcrição falhou - Status {transcript_response.status_code}"
             }
         
         transcript_id = transcript_response.json()['id']
         st.success("✅ Transcrição iniciada!")
+        st.info(f"ID: `{transcript_id}`")
         
         # PASSO 3: Monitorar progresso
         st.info("⏳ Processando áudio (isso pode levar alguns minutos)...")
@@ -149,7 +159,11 @@ def upload_and_transcribe(file_path, api_key, language):
         progress_bar = st.progress(0)
         status_text = st.empty()
         
+        polling_count = 0
         while True:
+            polling_count += 1
+            st.write(f"Verificação #{polling_count}...")
+            
             status_response = requests.get(
                 f'https://api.assemblyai.com/v1/transcript/{transcript_id}',
                 headers=headers,
@@ -164,6 +178,8 @@ def upload_and_transcribe(file_path, api_key, language):
             
             result = status_response.json()
             status = result['status']
+            
+            st.write(f"Status: `{status}`")
             
             # Atualizar barra de progresso
             if status == 'queued':
@@ -182,17 +198,20 @@ def upload_and_transcribe(file_path, api_key, language):
                     'data': result
                 }
             elif status == 'failed':
+                error = result.get('error', 'Erro desconhecido')
+                st.error(f"❌ Transcrição falhou: {error}")
                 return {
                     'success': False,
-                    'error': f"Transcrição falhou: {result.get('error', 'Erro desconhecido')}"
+                    'error': f"Transcrição falhou: {error}"
                 }
             
             time.sleep(3)
     
     except Exception as e:
+        st.error(f"❌ Erro geral: {str(e)}")
         return {
             'success': False,
-            'error': f"Erro: {str(e)}"
+            'error': str(e)
         }
 
 def format_transcript(transcript_data, speaker_names):
@@ -212,6 +231,10 @@ def format_transcript(transcript_data, speaker_names):
     return formatted
 
 # ==================== INTERFACE ====================
+
+if not api_key:
+    st.warning("❌ Configure sua API Key no sidebar para começar!")
+    st.stop()
 
 tab1, tab2, tab3 = st.tabs(["📤 Upload", "⏳ Processar", "📋 Histórico"])
 
