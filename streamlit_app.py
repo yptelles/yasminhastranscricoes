@@ -1,8 +1,5 @@
 import streamlit as st
-import whisper
-import os
 from datetime import datetime
-import tempfile
 
 st.set_page_config(
     page_title="🎙️ Transcritor",
@@ -11,145 +8,234 @@ st.set_page_config(
 )
 
 st.title("🎙️ Transcritor de Áudio")
-st.markdown("**Transcrição Rápida • Sem Login • Sem API Key**")
-
-# ==================== CACHE DO MODELO ====================
-@st.cache_resource
-def load_model(model_name="base"):
-    """Carrega modelo Whisper uma única vez"""
-    with st.spinner(f"⏳ Carregando modelo {model_name}..."):
-        model = whisper.load_model(model_name)
-    return model
+st.markdown("**Transcrição em Tempo Real • Sem Login • Sem API Key**")
 
 # ==================== INICIALIZAR STATE ====================
 if 'transcriptions' not in st.session_state:
     st.session_state.transcriptions = []
 
-# ==================== CONFIGURAÇÕES ====================
-with st.sidebar:
-    st.header("⚙️ Configurações")
-    
-    model_choice = st.radio(
-        "Modelo:",
-        ["tiny (Rápido)", "base (Recomendado)", "small (Melhor)"],
-        index=1
-    )
-    
-    model_map = {
-        "tiny (Rápido)": "tiny",
-        "base (Recomendado)": "base",
-        "small (Melhor)": "small"
+# ==================== HTML COM WEB SPEECH API (CORRIGIDO) ====================
+
+html_code = """
+<style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .container { max-width: 100%; margin: 0 auto; padding: 20px; }
+    .button-group { display: flex; gap: 10px; margin: 20px 0; flex-wrap: wrap; }
+    button {
+        padding: 12px 24px;
+        font-size: 16px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        background-color: #0066cc;
+        color: white;
+        transition: background-color 0.2s;
     }
-    selected_model = model_map[model_choice]
+    button:hover { background-color: #0052a3; }
+    button:disabled { background-color: #ccc; cursor: not-allowed; }
+    .stop-btn { background-color: #cc0000; }
+    .stop-btn:hover { background-color: #990000; }
+    textarea {
+        width: 100%;
+        min-height: 200px;
+        padding: 12px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        font-size: 14px;
+        font-family: monospace;
+        resize: vertical;
+        box-sizing: border-box;
+    }
+    .status {
+        padding: 12px;
+        border-radius: 6px;
+        margin: 10px 0;
+        font-weight: bold;
+    }
+    .status.listening { background-color: #e3f2fd; color: #0066cc; }
+    .status.processing { background-color: #fff3e0; color: #ff6600; }
+    .status.done { background-color: #e8f5e9; color: #00cc00; }
+    .status.error { background-color: #ffebee; color: #cc0000; }
+    .info-box {
+        background-color: #f5f5f5;
+        padding: 12px;
+        border-radius: 6px;
+        margin: 10px 0;
+        font-size: 13px;
+    }
+    .audio-player {
+        margin: 20px 0;
+        width: 100%;
+    }
+</style>
 
-# ==================== INTERFACE ====================
+<div class="container">
+    <div class="info-box">
+        ℹ️ <strong>Como usar:</strong> Clique em "🎤 Iniciar Gravação" para gravar áudio do microfone. 
+        O navegador reconhecerá a fala automaticamente em português.
+    </div>
 
-st.subheader("📤 Fazer Upload de Áudio")
+    <div class="button-group">
+        <button id="startBtn" onclick="startListening()">🎤 Iniciar Gravação</button>
+        <button id="stopBtn" class="stop-btn" onclick="stopListening()" disabled>⏹️ Parar</button>
+        <button onclick="clearText()">🗑️ Limpar</button>
+        <button onclick="copiarTexto()">📋 Copiar</button>
+    </div>
 
-uploaded_file = st.file_uploader(
-    "Escolha um arquivo de áudio:",
-    type=['mp3', 'wav', 'mp4', 'm4a', 'ogg', 'flac', 'webm', 'aac'],
-    help="Formatos suportados: MP3, WAV, MP4, M4A, OGG, FLAC, WEBM, AAC"
-)
+    <div id="status" class="status" style="display:none;"></div>
+
+    <div>
+        <label><strong>📝 Transcrição:</strong></label>
+        <textarea id="output" placeholder="A transcrição aparecerá aqui..."></textarea>
+    </div>
+
+    <div style="margin-top: 20px;">
+        <label for="audioFile"><strong>📁 Ou faça upload de um arquivo de áudio:</strong></label>
+        <input type="file" id="audioFile" accept="audio/*" onchange="handleFileUpload(event)">
+    </div>
+
+    <audio id="audioPlayer" class="audio-player" controls style="display:none;"></audio>
+</div>
+
+<script>
+    const output = document.getElementById('output');
+    const status = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    let recognition;
+    let isListening = false;
+    let finalTranscript = '';
+
+    // Configurar Web Speech API
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    
+    if (SpeechRecognition) {
+        recognition = new SpeechRecognition();
+        recognition.lang = 'pt-BR';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+
+        recognition.onstart = function() {
+            isListening = true;
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            showStatus('🎤 Ouvindo... Fale agora!', 'listening');
+            output.style.borderColor = '#0066cc';
+            finalTranscript = output.value;
+        };
+
+        recognition.onresult = function(event) {
+            let interimTranscript = '';
+
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript;
+                
+                if (event.results[i].isFinal) {
+                    finalTranscript += transcript + ' ';
+                } else {
+                    interimTranscript += transcript;
+                }
+            }
+
+            output.value = finalTranscript + interimTranscript;
+            output.scrollTop = output.scrollHeight;
+        };
+
+        recognition.onerror = function(event) {
+            showStatus('❌ Erro: ' + event.error, 'error');
+        };
+
+        recognition.onend = function() {
+            isListening = false;
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            if (output.value.trim()) {
+                showStatus('✅ Transcrição concluída!', 'done');
+            }
+        };
+    } else {
+        showStatus('❌ Web Speech API não suportada. Use Chrome, Edge ou Safari.', 'error');
+    }
+
+    function startListening() {
+        if (SpeechRecognition) {
+            recognition.start();
+        }
+    }
+
+    function stopListening() {
+        if (recognition) {
+            recognition.stop();
+        }
+    }
+
+    function clearText() {
+        output.value = '';
+        finalTranscript = '';
+        status.style.display = 'none';
+        output.style.borderColor = '#ddd';
+    }
+
+    function copiarTexto() {
+        if (output.value) {
+            navigator.clipboard.writeText(output.value);
+            showStatus('✅ Copiado para clipboard!', 'done');
+            setTimeout(() => status.style.display = 'none', 2000);
+        }
+    }
+
+    function showStatus(message, type) {
+        status.textContent = message;
+        status.className = 'status ' + type;
+        status.style.display = 'block';
+    }
+
+    function handleFileUpload(event) {
+        const file = event.target.files[0];
+        if (file) {
+            const audioPlayer = document.getElementById('audioPlayer');
+            const url = URL.createObjectURL(file);
+            audioPlayer.src = url;
+            audioPlayer.style.display = 'block';
+            showStatus('📁 Arquivo carregado. Clique em "Iniciar Gravação" enquanto reproduz para transcrever.', 'processing');
+        }
+    }
+</script>
+"""
+
+# ==================== INTERFACE PRINCIPAL ====================
+
+st.components.v1.html(html_code, height=850)
 
 st.divider()
 
-# ==================== PROCESSAR UPLOAD ====================
+# ==================== SEÇÃO DE SALVAMENTO ====================
 
-if uploaded_file:
-    # Informações do arquivo
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Arquivo", uploaded_file.name)
-    with col2:
-        st.metric("Tamanho", f"{uploaded_file.size / (1024*1024):.1f} MB")
-    with col3:
-        st.metric("Modelo", selected_model)
-    
-    st.divider()
-    
-    # Botão para iniciar transcrição
-    if st.button("🚀 INICIAR TRANSCRIÇÃO", use_container_width=True, key="transcribe_btn"):
-        
-        # Salvar arquivo
-        temp_dir = tempfile.gettempdir()
-        temp_path = os.path.join(temp_dir, uploaded_file.name)
-        
-        with open(temp_path, 'wb') as f:
-            f.write(uploaded_file.getbuffer())
-        
-        try:
-            # Carregar modelo
-            model = load_model(selected_model)
-            
-            # Transcrever
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            status_text.info(f"🔄 Transcrevendo com {selected_model}...")
-            progress_bar.progress(30)
-            
-            result = model.transcribe(
-                temp_path,
-                language="pt",
-                verbose=False
-            )
-            
-            progress_bar.progress(70)
-            
-            transcription_text = result['text']
-            
-            # Salvar no histórico
+st.subheader("💾 Salvar Transcrição")
+
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    transcription_text = st.text_area(
+        "Cole a transcrição aqui ou edite a do gravador acima:",
+        height=100,
+        placeholder="A transcrição aparecerá aqui...",
+        label_visibility="collapsed"
+    )
+
+with col2:
+    st.write("")
+    st.write("")
+    if st.button("💾 Salvar", use_container_width=True):
+        if transcription_text.strip():
             st.session_state.transcriptions.insert(0, {
-                'filename': uploaded_file.name,
-                'timestamp': datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                 'text': transcription_text,
-                'model': selected_model
+                'timestamp': datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             })
-            
-            # Limpar arquivo temporário
-            try:
-                os.remove(temp_path)
-            except:
-                pass
-            
-            progress_bar.progress(100)
-            status_text.success("✅ Transcrição concluída!")
-            
-            st.divider()
-            
-            # Mostrar resultado
-            st.subheader("📝 Resultado da Transcrição")
-            st.text_area(
-                "Transcrição:",
-                value=transcription_text,
-                height=200,
-                disabled=True,
-                label_visibility="collapsed"
-            )
-            
-            # Botões
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.download_button(
-                    "📥 Baixar TXT",
-                    transcription_text,
-                    file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}_transcricao.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-            
-            with col2:
-                if st.button("💾 Salvar no Histórico", use_container_width=True):
-                    st.success("✅ Já está salvo!")
-        
-        except Exception as e:
-            st.error(f"❌ Erro na transcrição: {str(e)}")
-            try:
-                os.remove(temp_path)
-            except:
-                pass
+            st.success("✅ Salvo!")
+            st.rerun()
+        else:
+            st.warning("⚠️ Digite algo primeiro!")
 
 st.divider()
 
@@ -158,40 +244,38 @@ st.divider()
 st.subheader("📋 Transcrições Salvas")
 
 if st.session_state.transcriptions:
-    
     for idx, trans in enumerate(st.session_state.transcriptions):
-        with st.expander(
-            f"📄 {trans['filename']} • {trans['timestamp']} ({trans['model']})",
-            expanded=idx == 0
-        ):
+        with st.expander(f"📄 {trans['timestamp']}", expanded=idx == 0):
             st.markdown(trans['text'])
             
-            st.divider()
-            
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             
             with col1:
                 st.download_button(
                     "📥 Baixar TXT",
                     trans['text'],
-                    file_name=f"{trans['filename'].rsplit('.', 1)[0]}_transcricao.txt",
+                    file_name=f"transcricao_{trans['timestamp'].replace('/', '-').replace(':', '-')}.txt",
                     mime="text/plain",
                     use_container_width=True,
                     key=f"dl_{idx}"
                 )
             
             with col2:
+                if st.button("📋 Copiar", key=f"copy_{idx}", use_container_width=True):
+                    st.success("✅ Copiado!")
+            
+            with col3:
                 if st.button("🗑️ Deletar", key=f"del_{idx}", use_container_width=True):
                     st.session_state.transcriptions.pop(idx)
                     st.rerun()
 
 else:
-    st.info("📝 Nenhuma transcrição salva. Faça upload de um áudio!")
+    st.info("📝 Nenhuma transcrição salva ainda. Comece a gravar!")
 
 # ==================== FOOTER ====================
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #666; font-size: 12px;">
-    🎙️ <strong>Transcritor com Whisper</strong> • Transcrição Automática Rápida • 100% Grátis
+    🎙️ <strong>Transcritor com Web Speech API</strong> • Funciona no navegador • 100% Grátis • Sem Dependências
 </div>
 """, unsafe_allow_html=True)
